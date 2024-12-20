@@ -42,6 +42,9 @@ fn main() {
     let mut wavvy = WavvyChat::new(model, tokenizer, &device, None);
 
     println!("Question: {question}");
-    let response = wavvy.invoke(message_template.format());
-    println!("Answer: {}", response.unwrap().content)
+    let response = wavvy.invoke(message_template.format()).unwrap();
+    println!("Answer: {}", response.content);
+    println!("Prompt Tokens: {}", response.prompt_tokens);
+    println!("Completion Tokens: {}", response.completion_tokens);
+    println!("Total Tokens: {}", response.total_tokens);
 }

@@ -1,13 +1,13 @@
 use candle_core::Result;
 
-pub struct TokenOutputStream {
+pub struct TokenOutput {
     tokenizer: tokenizers::Tokenizer,
     tokens: Vec<u32>,
     prev_index: usize,
     current_index: usize,
 }
 
-impl TokenOutputStream {
+impl TokenOutput {
     pub fn new(tokenizer: tokenizers::Tokenizer) -> Self {
         Self {
             tokenizer,
@@ -26,6 +26,10 @@ impl TokenOutputStream {
             Ok(str) => Ok(str),
             Err(err) => candle_core::bail!("cannot decode: {err}"),
         }
+    }
+
+    pub fn total_tokens(&self) -> usize {
+        self.tokens.len()
     }
 
     pub fn next_token(&mut self, token: u32) -> Result<Option<String>> {
