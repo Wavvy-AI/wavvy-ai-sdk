@@ -1,9 +1,12 @@
+use std::task::Poll;
+
 use super::token_output::TokenOutput;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use candle_transformers::models::quantized_qwen2::ModelWeights as Qwen2;
+use futures::Stream;
 use thiserror::Error;
-use tokenizers::Tokenizer;
+use tokenizers::{Encoding, Tokenizer};
 
 #[derive(Error, Debug)]
 pub enum WavvyError {
@@ -13,10 +16,18 @@ pub enum WavvyError {
     PromptError(String),
 }
 
-pub struct WavvyChat {
+pub struct WavvyChatStream {
     model: Qwen2,
     device: Device,
-    tokenizer: Tokenizer,
+    tos: TokenOutput,
+    all_tokens: Vec<u32>,
+    eos_token: u32,
+    index: usize,
+    next_token: u32,
+    tokens: Encoding,
+    token_ids: Vec<u32>,
+    logits_processor: LogitsProcessor,
+    is_prompt_initialized: bool,
     pub args: WavvyArgs,
 }
 
@@ -55,7 +66,7 @@ impl Default for WavvyArgs {
     }
 }
 
-impl WavvyChat {
+impl WavvyChatStream {
     pub fn new(
         model: Qwen2,
         tokenizer: Tokenizer,
@@ -65,7 +76,15 @@ impl WavvyChat {
         Self {
             model,
             device: device.clone(),
-            tokenizer,
+            tos: TokenOutput::new(tokenizer),
+            all_tokens: vec![],
+            eos_token: 0,
+            index: 0,
+            next_token: 0,
+            tokens: Encoding::default(),
+            token_ids: vec![],
+            logits_processor: LogitsProcessor::from_sampling(299792458, Sampling::ArgMax),
+            is_prompt_initialized: false,
             args: args.clone().unwrap_or_default(),
         }
     }
@@ -85,13 +104,9 @@ impl WavvyChat {
         LogitsProcessor::from_sampling(self.args.seed, sampling)
     }
 
-    fn prompt_next_token(
-        &mut self,
-        logits_processor: &mut LogitsProcessor,
-        tokens: &[u32],
-    ) -> Result<u32, WavvyError> {
+    fn prompt_next_token(&mut self) -> Result<u32, WavvyError> {
         let next_token = if !self.args.split_prompt {
-            let input = Tensor::new(tokens, &self.device)
+            let input = Tensor::new(self.token_ids.clone(), &self.device)
                 .map_err(|e| WavvyError::PromptError(e.to_string()))?
                 .unsqueeze(0)
                 .map_err(|e| WavvyError::PromptError(e.to_string()))?;
@@ -99,12 +114,12 @@ impl WavvyChat {
             let logits = logits
                 .squeeze(0)
                 .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-            logits_processor
+            self.logits_processor
                 .sample(&logits)
                 .map_err(|e| WavvyError::PromptError(e.to_string()))?
         } else {
             let mut next_token = 0;
-            for (pos, token) in tokens.iter().enumerate() {
+            for (pos, token) in self.token_ids.iter().enumerate() {
                 let input = Tensor::new(&[*token], &self.device)
                     .map_err(|e| WavvyError::PromptError(e.to_string()))?
                     .unsqueeze(0)
@@ -116,7 +131,8 @@ impl WavvyChat {
                 let logits = logits
                     .squeeze(0)
                     .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-                next_token = logits_processor
+                next_token = self
+                    .logits_processor
                     .sample(&logits)
                     .map_err(|e| WavvyError::PromptError(e.to_string()))?;
             }
@@ -129,7 +145,6 @@ impl WavvyChat {
         &mut self,
         next_token: u32,
         index: usize,
-        tokens: &[u32],
         all_tokens: Vec<u32>,
     ) -> Result<Tensor, WavvyError> {
         let input = Tensor::new(&[next_token], &self.device)
@@ -139,7 +154,7 @@ impl WavvyChat {
 
         let logits = self
             .model
-            .forward(&input, tokens.len() + index)
+            .forward(&input, self.token_ids.len() + index)
             .map_err(|e| WavvyError::PromptError(e.to_string()))?;
 
         let logits = logits
@@ -160,54 +175,87 @@ impl WavvyChat {
         Ok(logits)
     }
 
-    pub fn invoke(&mut self, prompt_str: String) -> Result<ChatResponse, WavvyError> {
-        let mut all_tokens: Vec<u32> = vec![];
-        let mut tos = TokenOutput::new(self.tokenizer.clone());
-        let eos_token = *tos.tokenizer().get_vocab(true).get("<|im_end|>").unwrap();
+    pub fn invoke(mut self, prompt_str: String) -> Result<Self, WavvyError> {
+        self.eos_token = *self
+            .tos
+            .tokenizer()
+            .get_vocab(true)
+            .get("<|im_end|>")
+            .unwrap();
 
-        let tokens = tos
+        self.tokens = self
+            .tos
             .tokenizer()
             .encode(prompt_str, true)
             .map_err(|e| WavvyError::TokenizerError(e.to_string()))?;
 
-        let tokens: &[u32] = tokens.get_ids();
+        self.token_ids = self.tokens.get_ids().to_vec();
 
-        let mut logits_processor = self.init_logits_processor();
-        let mut next_token = self.prompt_next_token(&mut logits_processor, tokens)?;
+        self.logits_processor = self.init_logits_processor();
+        self.next_token = self.prompt_next_token()?;
 
-        tos.next_token(next_token)
-            .map_err(|e| WavvyError::PromptError(e.to_string()))?;
+        Ok(self)
+    }
+}
 
-        all_tokens.push(next_token);
+impl Stream for WavvyChatStream {
+    type Item = Result<ChatResponse, WavvyError>;
 
-        for index in 0..self.args.sample_len.saturating_sub(1) {
-            let logits = self.process_logits(next_token, index, tokens, all_tokens.clone())?;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self.as_mut().get_mut();
 
-            next_token = logits_processor
-                .sample(&logits)
-                .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-            all_tokens.push(next_token);
-
-            tos.next_token(next_token)
-                .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-
-            if next_token == eos_token {
-                break;
-            };
+        if this.index == this.args.sample_len.saturating_sub(1) {
+            return Poll::Ready(None);
         }
 
-        let content = tos
-            .decode_all()
+        if this.next_token == this.eos_token {
+            return Poll::Ready(None);
+        }
+
+        if !this.is_prompt_initialized {
+            if let Some(text) = this
+                .tos
+                .next_token(this.next_token)
+                .map_err(|e| WavvyError::PromptError(e.to_string()))?
+            {
+                this.is_prompt_initialized = true;
+                this.all_tokens.push(this.next_token);
+                let prompt_tokens = this.token_ids.len();
+                let completion_tokens = this.tos.total_tokens();
+                return Poll::Ready(Some(Ok(ChatResponse {
+                    content: text,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens: prompt_tokens + completion_tokens,
+                })));
+            }
+        }
+
+        let logits = this.process_logits(this.next_token, this.index, this.all_tokens.clone())?;
+
+        this.next_token = this
+            .logits_processor
+            .sample(&logits)
             .map_err(|e| WavvyError::PromptError(e.to_string()))?;
 
-        let completion_tokens = tos.total_tokens();
-        let prompt_tokens = tokens.len();
+        this.all_tokens.push(this.next_token);
+        let text = this
+            .tos
+            .next_token(this.next_token)
+            .map_err(|e| WavvyError::PromptError(e.to_string()))?;
 
-        Ok(ChatResponse {
-            content,
+        this.index += 1;
+
+        let prompt_tokens = this.token_ids.len();
+        let completion_tokens = this.tos.total_tokens();
+        return Poll::Ready(Some(Ok(ChatResponse {
+            content: text.unwrap_or_default(),
             prompt_tokens,
             completion_tokens,
             total_tokens: prompt_tokens + completion_tokens,
-        })
+        })));
     }
 }

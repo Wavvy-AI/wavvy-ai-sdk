@@ -1,13 +1,15 @@
 use candle_core::Device;
+use futures::StreamExt;
 use wavvy_engine::{
-    llm::{model_builder::ModelBuilder, wavvy_chat::WavvyChat},
+    llm::{model_builder::ModelBuilder, wavvy_chat_stream::WavvyChatStream},
     prompt_template::{
         chat_template::ChatTemplate,
         message::{Message, Role},
     },
 };
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let assistant = Message {
         role: Role::System,
         content: String::from("You are helpful assistant!"),
@@ -39,12 +41,33 @@ fn main() {
     let model = model_builder.load_model();
     println!("Model and tokenizer loaded");
 
-    let mut wavvy = WavvyChat::new(model, tokenizer, &device, None);
+    // let mut wavvy = WavvyChat::new(model, tokenizer, &device, None);
 
     println!("Question: {question}");
-    let response = wavvy.invoke(message_template.format()).unwrap();
-    println!("Answer: {}", response.content);
-    println!("Prompt Tokens: {}", response.prompt_tokens);
-    println!("Completion Tokens: {}", response.completion_tokens);
-    println!("Total Tokens: {}", response.total_tokens);
+    // let response = wavvy.invoke(message_template.format()).unwrap();
+    // println!("Answer: {}", response.content);
+    // println!("Prompt Tokens: {}", response.prompt_tokens);
+    // println!("Completion Tokens: {}", response.completion_tokens);
+    // println!("Total Tokens: {}", response.total_tokens);
+
+    // stream
+
+    let wavvy = WavvyChatStream::new(model, tokenizer, &device, None);
+
+    let mut response = wavvy.invoke(message_template.format()).unwrap();
+
+    while let Some(item) = response.next().await {
+        match item {
+            Ok(response) => {
+                print!("{}", response.content);
+                // println!("Answer: {}", response.content);
+                // println!("Prompt Tokens: {}", response.prompt_tokens);
+                // println!("Completion Tokens: {}", response.completion_tokens);
+                // println!("Total Tokens: {}", response.total_tokens);
+            }
+            Err(e) => {
+                println!("Error: {}", e);
+            }
+        }
+    }
 }
