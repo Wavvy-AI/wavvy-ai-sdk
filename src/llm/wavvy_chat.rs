@@ -1,58 +1,14 @@
-use super::token_output::TokenOutput;
-use candle_core::{Device, Tensor};
-use candle_transformers::generation::{LogitsProcessor, Sampling};
+use super::wavvy_chat_stream::{ChatResponse, WavvyArgs, WavvyChatStream, WavvyError};
+use candle_core::Device;
 use candle_transformers::models::quantized_qwen2::ModelWeights as Qwen2;
-use thiserror::Error;
+use futures::StreamExt;
 use tokenizers::Tokenizer;
-
-#[derive(Error, Debug)]
-pub enum WavvyError {
-    #[error("Tokenizer error, {0}")]
-    TokenizerError(String),
-    #[error("Prompt error, {0}")]
-    PromptError(String),
-}
 
 pub struct WavvyChat {
     model: Qwen2,
     device: Device,
     tokenizer: Tokenizer,
     pub args: WavvyArgs,
-}
-
-#[derive(Debug)]
-pub struct ChatResponse {
-    pub content: String,
-    pub prompt_tokens: usize,
-    pub completion_tokens: usize,
-    pub total_tokens: usize,
-}
-
-#[derive(Clone, Debug)]
-pub struct WavvyArgs {
-    pub sample_len: usize,
-    pub temperature: f64,
-    pub top_p: Option<f64>,
-    pub top_k: Option<usize>,
-    pub seed: u64,
-    pub split_prompt: bool,
-    pub repeat_penalty: f32,
-    pub repeat_last_n: usize,
-}
-
-impl Default for WavvyArgs {
-    fn default() -> Self {
-        Self {
-            sample_len: 1000,
-            temperature: 0.8,
-            top_p: None,
-            top_k: None,
-            seed: 299792458,
-            split_prompt: true,
-            repeat_penalty: 1.1,
-            repeat_last_n: 65,
-        }
-    }
 }
 
 impl WavvyChat {
@@ -70,144 +26,42 @@ impl WavvyChat {
         }
     }
 
-    fn init_logits_processor(&self) -> LogitsProcessor {
-        let temperature = self.args.temperature;
-        let sampling = if temperature <= 0. {
-            Sampling::ArgMax
-        } else {
-            match (self.args.top_k, self.args.top_p) {
-                (None, None) => Sampling::All { temperature },
-                (Some(k), None) => Sampling::TopK { k, temperature },
-                (None, Some(p)) => Sampling::TopP { p, temperature },
-                (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
+    async fn process_invoke(self, prompt_str: String) -> Result<ChatResponse, WavvyError> {
+        let wavvy = WavvyChatStream::new(self.model, self.tokenizer, &self.device, Some(self.args));
+        let mut wavvy_response = wavvy.invoke(prompt_str).unwrap();
+        let mut resp = ChatResponse {
+            content: String::default(),
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+        };
+
+        while let Some(item) = wavvy_response.next().await {
+            match item {
+                Ok(response) => {
+                    resp.content.push_str(response.content.as_str());
+                    resp.prompt_tokens = response.prompt_tokens;
+                    resp.completion_tokens = response.completion_tokens;
+                    resp.total_tokens = response.total_tokens;
+                }
+                Err(e) => {
+                    println!("Error: {}", e);
+                }
             }
-        };
-        LogitsProcessor::from_sampling(self.args.seed, sampling)
-    }
-
-    fn prompt_next_token(
-        &mut self,
-        logits_processor: &mut LogitsProcessor,
-        tokens: &[u32],
-    ) -> Result<u32, WavvyError> {
-        let next_token = if !self.args.split_prompt {
-            let input = Tensor::new(tokens, &self.device)
-                .map_err(|e| WavvyError::PromptError(e.to_string()))?
-                .unsqueeze(0)
-                .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-            let logits = self.model.forward(&input, 0).unwrap();
-            let logits = logits
-                .squeeze(0)
-                .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-            logits_processor
-                .sample(&logits)
-                .map_err(|e| WavvyError::PromptError(e.to_string()))?
-        } else {
-            let mut next_token = 0;
-            for (pos, token) in tokens.iter().enumerate() {
-                let input = Tensor::new(&[*token], &self.device)
-                    .map_err(|e| WavvyError::PromptError(e.to_string()))?
-                    .unsqueeze(0)
-                    .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-                let logits = self
-                    .model
-                    .forward(&input, pos)
-                    .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-                let logits = logits
-                    .squeeze(0)
-                    .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-                next_token = logits_processor
-                    .sample(&logits)
-                    .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-            }
-            next_token
-        };
-        Ok(next_token)
-    }
-
-    pub fn process_logits(
-        &mut self,
-        next_token: u32,
-        index: usize,
-        tokens: &[u32],
-        all_tokens: Vec<u32>,
-    ) -> Result<Tensor, WavvyError> {
-        let input = Tensor::new(&[next_token], &self.device)
-            .map_err(|e| WavvyError::PromptError(e.to_string()))?
-            .unsqueeze(0)
-            .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-
-        let logits = self
-            .model
-            .forward(&input, tokens.len() + index)
-            .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-
-        let logits = logits
-            .squeeze(0)
-            .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-
-        let logits = if self.args.repeat_penalty == 1. {
-            logits
-        } else {
-            let start_at = all_tokens.len().saturating_sub(self.args.repeat_last_n);
-            candle_transformers::utils::apply_repeat_penalty(
-                &logits,
-                self.args.repeat_penalty,
-                &all_tokens[start_at..],
-            )
-            .map_err(|e| WavvyError::PromptError(e.to_string()))?
-        };
-        Ok(logits)
-    }
-
-    pub fn invoke(&mut self, prompt_str: String) -> Result<ChatResponse, WavvyError> {
-        let mut all_tokens: Vec<u32> = vec![];
-        let mut tos = TokenOutput::new(self.tokenizer.clone());
-        let eos_token = *tos.tokenizer().get_vocab(true).get("<|im_end|>").unwrap();
-
-        let tokens = tos
-            .tokenizer()
-            .encode(prompt_str, true)
-            .map_err(|e| WavvyError::TokenizerError(e.to_string()))?;
-
-        let tokens: &[u32] = tokens.get_ids();
-
-        let mut logits_processor = self.init_logits_processor();
-        let mut next_token = self.prompt_next_token(&mut logits_processor, tokens)?;
-
-        tos.next_token(next_token)
-            .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-
-        all_tokens.push(next_token);
-
-        for index in 0..self.args.sample_len.saturating_sub(1) {
-            let logits = self.process_logits(next_token, index, tokens, all_tokens.clone())?;
-
-            next_token = logits_processor
-                .sample(&logits)
-                .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-            all_tokens.push(next_token);
-
-            tos.next_token(next_token)
-                .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-
-            if next_token == eos_token {
-                break;
-            };
         }
+        Ok(resp)
+    }
 
-        let content = tos
-            .decode_all()
-            .map_err(|e| WavvyError::PromptError(e.to_string()))?;
+    pub fn invoke(self, prompt_str: String) -> Result<ChatResponse, WavvyError> {
+        let runtime =
+            tokio::runtime::Runtime::new().map_err(|e| WavvyError::ConfigError(e.to_string()))?;
+        let response = runtime.block_on(self.process_invoke(prompt_str))?;
+        Ok(response)
+    }
 
-        let completion_tokens = tos.total_tokens();
-        let prompt_tokens = tokens.len();
-
-        Ok(ChatResponse {
-            content,
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens + completion_tokens,
-        })
+    pub fn stream_invoke(self, prompt_str: String) -> Result<WavvyChatStream, WavvyError> {
+        let wavvy = WavvyChatStream::new(self.model, self.tokenizer, &self.device, Some(self.args));
+        let wavvy_stream = wavvy.invoke(prompt_str)?;
+        Ok(wavvy_stream)
     }
 }

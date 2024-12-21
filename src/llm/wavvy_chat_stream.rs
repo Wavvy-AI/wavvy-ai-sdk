@@ -10,6 +10,8 @@ use tokenizers::{Encoding, Tokenizer};
 
 #[derive(Error, Debug)]
 pub enum WavvyError {
+    #[error("Config error, {0}")]
+    ConfigError(String),
     #[error("Tokenizer error, {0}")]
     TokenizerError(String),
     #[error("Prompt error, {0}")]
@@ -73,6 +75,7 @@ impl WavvyChatStream {
         device: &Device,
         args: Option<WavvyArgs>,
     ) -> Self {
+        let default_args = WavvyArgs::default();
         Self {
             model,
             device: device.clone(),
@@ -83,9 +86,9 @@ impl WavvyChatStream {
             next_token: 0,
             tokens: Encoding::default(),
             token_ids: vec![],
-            logits_processor: LogitsProcessor::from_sampling(299792458, Sampling::ArgMax),
+            logits_processor: LogitsProcessor::from_sampling(default_args.seed, Sampling::ArgMax),
             is_prompt_initialized: false,
-            args: args.clone().unwrap_or_default(),
+            args: args.clone().unwrap_or(default_args),
         }
     }
 
