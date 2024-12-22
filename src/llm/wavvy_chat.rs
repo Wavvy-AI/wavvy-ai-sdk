@@ -53,8 +53,10 @@ impl WavvyChat {
     }
 
     pub fn invoke(self, prompt_str: String) -> Result<ChatResponse, WavvyError> {
-        let runtime =
-            tokio::runtime::Runtime::new().map_err(|e| WavvyError::ConfigError(e.to_string()))?;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| WavvyError::ConfigError(e.to_string()))?;
         let response = runtime.block_on(self.process_invoke(prompt_str))?;
         Ok(response)
     }
