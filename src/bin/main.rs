@@ -2,7 +2,7 @@ use clap::Parser;
 
 use candle_core::Device;
 use futures::StreamExt;
-use wavvy_engine::{
+use wavvy_ai_sdk::{
     llm::{model_builder::ModelBuilder, wavvy_chat::WavvyChat, wavvy_chat_stream::WavvyArgs},
     prompt_template::{
         chat_template::ChatTemplate,

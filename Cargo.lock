@@ -1859,7 +1859,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "943aab3fdaaa029a6e0271b35ea10b72b943135afe9bffca82384098ad0e06a6"
 
 [[package]]
-name = "wavvy-engine"
+name = "wavvy-ai-sdk"
 version = "0.1.0"
 dependencies = [
  "anyhow",
