@@ -14,6 +14,7 @@ anyhow = { version = "1.0.94" }
 thiserror = { version = "2.0.8" }
 futures = { version = "0.3.29" }
 tokio = { version = "1.42.0", features = ["macros", "rt-multi-thread"] }
+clap = { version = "4.5.27", features = ["derive"] }
 
 [features]
 metal = ["candle-core/metal", "candle-transformers/metal"]
