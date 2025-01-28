@@ -242,6 +242,11 @@ impl Stream for WavvyChatStream {
                 this.all_tokens.push(this.next_token);
                 let prompt_tokens = this.token_ids.len();
                 let completion_tokens = this.tos.total_tokens();
+                let text = if this.model == Model::W {
+                    text
+                } else {
+                    String::from("")
+                };
                 return Poll::Ready(Some(Ok(ChatResponse {
                     content: text,
                     prompt_tokens,
