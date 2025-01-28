@@ -1,3 +1,5 @@
+use crate::prompt_template::chat_template::Model;
+
 use super::wavvy_chat_stream::{ChatResponse, WavvyArgs, WavvyChatStream, WavvyError};
 use candle_core::Device;
 use candle_transformers::models::quantized_qwen2::ModelWeights as Qwen2;
@@ -5,7 +7,8 @@ use futures::StreamExt;
 use tokenizers::Tokenizer;
 
 pub struct WavvyChat {
-    model: Qwen2,
+    model: Model,
+    base_model: Qwen2,
     device: Device,
     tokenizer: Tokenizer,
     pub args: WavvyArgs,
@@ -13,13 +16,15 @@ pub struct WavvyChat {
 
 impl WavvyChat {
     pub fn new(
-        model: Qwen2,
+        model: Model,
+        base_model: Qwen2,
         tokenizer: Tokenizer,
         device: &Device,
         args: Option<WavvyArgs>,
     ) -> Self {
         Self {
             model,
+            base_model,
             device: device.clone(),
             tokenizer,
             args: args.clone().unwrap_or_default(),
@@ -27,7 +32,13 @@ impl WavvyChat {
     }
 
     async fn process_invoke(self, prompt_str: String) -> Result<ChatResponse, WavvyError> {
-        let wavvy = WavvyChatStream::new(self.model, self.tokenizer, &self.device, Some(self.args));
+        let wavvy = WavvyChatStream::new(
+            self.model,
+            self.base_model,
+            self.tokenizer,
+            &self.device,
+            Some(self.args),
+        );
         let mut wavvy_response = wavvy.invoke(prompt_str).unwrap();
         let mut resp = ChatResponse {
             content: String::default(),
@@ -62,7 +73,13 @@ impl WavvyChat {
     }
 
     pub fn stream_invoke(self, prompt_str: String) -> Result<WavvyChatStream, WavvyError> {
-        let wavvy = WavvyChatStream::new(self.model, self.tokenizer, &self.device, Some(self.args));
+        let wavvy = WavvyChatStream::new(
+            self.model,
+            self.base_model,
+            self.tokenizer,
+            &self.device,
+            Some(self.args),
+        );
         let wavvy_stream = wavvy.invoke(prompt_str)?;
         Ok(wavvy_stream)
     }

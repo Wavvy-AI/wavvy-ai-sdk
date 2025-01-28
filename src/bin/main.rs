@@ -5,14 +5,22 @@ use futures::StreamExt;
 use wavvy_ai_sdk::{
     llm::{model_builder::ModelBuilder, wavvy_chat::WavvyChat, wavvy_chat_stream::WavvyArgs},
     prompt_template::{
-        chat_template::ChatTemplate,
-        message::{Message, Role},
+        chat_template::{ChatTemplate, Model},
+        message::Message,
+        role::Role,
     },
 };
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
+    #[arg(
+        long,
+        help = "The model name to use 'r1' or 'w' default is 'w'",
+        default_value_t = String::from("w"),
+    )]
+    pub model_name: String,
+
     #[arg(long)]
     pub model_path: Option<String>,
 
@@ -51,16 +59,20 @@ struct Args {
 async fn main() {
     let args = Args::parse();
 
+    let device = Device::new_metal(0).unwrap();
+
     let question = args.prompt.unwrap();
 
-    let messages = vec![Message {
-        role: Role::User,
-        content: question.clone(),
-    }];
+    let model_name = if args.model_name == "r1" {
+        Model::R1
+    } else {
+        Model::W
+    };
 
-    let message_template = ChatTemplate::new(messages);
+    let messages = vec![Message::new(Role::User, question.clone())];
 
-    let device = Device::new_metal(0).unwrap();
+    let message_template = ChatTemplate::new(model_name, messages);
+
     // Path examples:
     // model-path: ./model/Qwen2.5-3B-Instruct/qwen2.5-3b-instruct-q4_0.gguf
     // tokenizer-path: ./model/Qwen2.5-3B-Instruct/tokenizer.json
@@ -84,7 +96,14 @@ async fn main() {
         repeat_penalty: args.repeat_penalty,
         repeat_last_n: args.repeat_last_n,
     });
-    let wavvy = WavvyChat::new(model, tokenizer, &device, wavvy_args);
+
+    let model_name = if args.model_name == "r1" {
+        Model::R1
+    } else {
+        Model::W
+    };
+
+    let wavvy = WavvyChat::new(model_name, model, tokenizer, &device, wavvy_args);
     let mut response = wavvy.stream_invoke(message_template.format()).unwrap();
 
     println!("Question: {question}");

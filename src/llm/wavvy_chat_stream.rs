@@ -1,5 +1,7 @@
 use std::task::Poll;
 
+use crate::prompt_template::chat_template::Model;
+
 use super::token_output::TokenOutput;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
@@ -19,7 +21,8 @@ pub enum WavvyError {
 }
 
 pub struct WavvyChatStream {
-    model: Qwen2,
+    model: Model,
+    base_model: Qwen2,
     device: Device,
     tos: TokenOutput,
     all_tokens: Vec<u32>,
@@ -70,7 +73,8 @@ impl Default for WavvyArgs {
 
 impl WavvyChatStream {
     pub fn new(
-        model: Qwen2,
+        model: Model,
+        base_model: Qwen2,
         tokenizer: Tokenizer,
         device: &Device,
         args: Option<WavvyArgs>,
@@ -78,6 +82,7 @@ impl WavvyChatStream {
         let default_args = WavvyArgs::default();
         Self {
             model,
+            base_model,
             device: device.clone(),
             tos: TokenOutput::new(tokenizer),
             all_tokens: vec![],
@@ -113,7 +118,7 @@ impl WavvyChatStream {
                 .map_err(|e| WavvyError::PromptError(e.to_string()))?
                 .unsqueeze(0)
                 .map_err(|e| WavvyError::PromptError(e.to_string()))?;
-            let logits = self.model.forward(&input, 0).unwrap();
+            let logits = self.base_model.forward(&input, 0).unwrap();
             let logits = logits
                 .squeeze(0)
                 .map_err(|e| WavvyError::PromptError(e.to_string()))?;
@@ -128,7 +133,7 @@ impl WavvyChatStream {
                     .unsqueeze(0)
                     .map_err(|e| WavvyError::PromptError(e.to_string()))?;
                 let logits = self
-                    .model
+                    .base_model
                     .forward(&input, pos)
                     .map_err(|e| WavvyError::PromptError(e.to_string()))?;
                 let logits = logits
@@ -156,7 +161,7 @@ impl WavvyChatStream {
             .map_err(|e| WavvyError::PromptError(e.to_string()))?;
 
         let logits = self
-            .model
+            .base_model
             .forward(&input, self.token_ids.len() + index)
             .map_err(|e| WavvyError::PromptError(e.to_string()))?;
 
@@ -179,12 +184,21 @@ impl WavvyChatStream {
     }
 
     pub fn invoke(mut self, prompt_str: String) -> Result<Self, WavvyError> {
-        self.eos_token = *self
-            .tos
-            .tokenizer()
-            .get_vocab(true)
-            .get("<|im_end|>")
-            .unwrap();
+        if self.model == Model::R1 {
+            self.eos_token = *self
+                .tos
+                .tokenizer()
+                .get_vocab(true)
+                .get("<｜end▁of▁sentence｜>")
+                .unwrap();
+        } else if self.model == Model::W {
+            self.eos_token = *self
+                .tos
+                .tokenizer()
+                .get_vocab(true)
+                .get("<|im_end|>")
+                .unwrap();
+        }
 
         self.tokens = self
             .tos
