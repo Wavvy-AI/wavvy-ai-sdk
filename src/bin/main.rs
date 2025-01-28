@@ -106,16 +106,30 @@ async fn main() {
     let wavvy = WavvyChat::new(model_name, model, tokenizer, &device, wavvy_args);
     let mut response = wavvy.stream_invoke(message_template.format()).unwrap();
 
+    let mut prompt_tokens = 0;
+    let mut completion_tokens = 0;
+    let mut total_tokens = 0;
+
     println!("Question: {question}");
     print!("Answer: ");
+    let time_process = std::time::Instant::now();
     while let Some(item) = response.next().await {
         match item {
             Ok(response) => {
                 print!("{}", response.content);
+                prompt_tokens += response.prompt_tokens;
+                completion_tokens += response.completion_tokens;
+                total_tokens += response.total_tokens;
             }
             Err(e) => {
                 println!("Error: {}", e);
             }
         }
     }
+    let dt = time_process.elapsed();
+    println!("\n\n==============================");
+    println!("Time: {:.2} seconds", dt.as_secs_f64());
+    println!("prompt_tokens: {prompt_tokens} tokens");
+    println!("completion_tokens: {completion_tokens} tokens");
+    println!("total_tokens: {total_tokens} tokens");
 }
