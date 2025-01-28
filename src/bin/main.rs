@@ -77,7 +77,7 @@ async fn main() {
     // model-path: ./model/Qwen2.5-3B-Instruct/qwen2.5-3b-instruct-q4_0.gguf
     // tokenizer-path: ./model/Qwen2.5-3B-Instruct/tokenizer.json
     let model_builder = ModelBuilder::new(
-        args.model_path.unwrap().as_str(),
+        args.model_path.clone().unwrap().as_str(),
         args.tokenizer_path.unwrap().as_str(),
         &device,
     );
@@ -117,9 +117,9 @@ async fn main() {
         match item {
             Ok(response) => {
                 print!("{}", response.content);
-                prompt_tokens += response.prompt_tokens;
-                completion_tokens += response.completion_tokens;
-                total_tokens += response.total_tokens;
+                prompt_tokens = response.prompt_tokens;
+                completion_tokens = response.completion_tokens;
+                total_tokens = response.total_tokens;
             }
             Err(e) => {
                 println!("Error: {}", e);
@@ -127,9 +127,14 @@ async fn main() {
         }
     }
     let dt = time_process.elapsed();
-    println!("\n\n==============================");
-    println!("Time: {:.2} seconds", dt.as_secs_f64());
-    println!("prompt_tokens: {prompt_tokens} tokens");
-    println!("completion_tokens: {completion_tokens} tokens");
-    println!("total_tokens: {total_tokens} tokens");
+    println!("\n\n============== Conclusion ================");
+    println!("model_path: {}", args.model_path.clone().unwrap());
+    println!("total_time: {:.2} seconds", dt.as_secs_f64());
+    println!("prompt_tokens: {} tokens", prompt_tokens);
+    println!("completion_tokens: {} tokens", completion_tokens);
+    println!("total_tokens: {} tokens", total_tokens);
+    println!(
+        "total tokens generated: {:.2} tokens/s",
+        total_tokens as f64 / dt.as_secs_f64()
+    );
 }
